@@ -67,6 +67,15 @@ struct ValidationResult {
         valid = false;
         errors.push_back({std::string(fieldName), std::string(message)});
     }
+
+    void mergeErrors(std::string_view fieldName, const ValidationResult& other) {
+        if (!other.valid) {
+            valid = false;
+            for (const auto& [errField, errMsg] : other.errors) {
+                errors.push_back({std::string(fieldName) + "." + errField, errMsg});
+            }
+        }
+    }
 };
 
 // ============================================================================
@@ -76,8 +85,15 @@ struct ValidationResult {
 template <> 
 struct YamlTraits<std::string> {
     using type = std::string;
-    static void parse(std::string& obj, const YAML::Node& node) {
-        obj = node.template as<std::string>();
+    static ValidationResult parse(std::string& obj, const YAML::Node& node) {
+        try {
+            obj = node.template as<std::string>();
+        } catch (const std::exception& e) {
+            ValidationResult result;
+            result.addError("", std::string("Invalid string: ") + e.what());
+            return result;
+        }
+        return ValidationResult();
     }
     static std::string toString(const std::string& obj) {
         return obj;
@@ -87,8 +103,15 @@ struct YamlTraits<std::string> {
 template <> 
 struct YamlTraits<int> {
     using type = int;
-    static void parse(int& obj, const YAML::Node& node) {
-        obj = node.template as<int>();
+    static ValidationResult parse(int& obj, const YAML::Node& node) {
+        try {
+            obj = node.template as<int>();
+        } catch (const std::exception& e) {
+            ValidationResult result;
+            result.addError("", std::string("Invalid integer: ") + e.what());
+            return result;
+        }
+        return ValidationResult();
     }
     static std::string toString(const int& obj) {
         return std::to_string(obj);
@@ -98,8 +121,15 @@ struct YamlTraits<int> {
 template <> 
 struct YamlTraits<double> {
     using type = double;
-    static void parse(double& obj, const YAML::Node& node) {
-        obj = node.template as<double>();
+    static ValidationResult parse(double& obj, const YAML::Node& node) {
+        try {
+            obj = node.template as<double>();
+        } catch (const std::exception& e) {
+            ValidationResult result;
+            result.addError("", std::string("Invalid double: ") + e.what());
+            return result;
+        }
+        return ValidationResult();
     }
     static std::string toString(const double& obj) {
         return std::to_string(obj);
@@ -109,8 +139,15 @@ struct YamlTraits<double> {
 template <> 
 struct YamlTraits<bool> {
     using type = bool;
-    static void parse(bool& obj, const YAML::Node& node) {
-        obj = node.template as<bool>();
+    static ValidationResult parse(bool& obj, const YAML::Node& node) {
+        try {
+            obj = node.template as<bool>();
+        } catch (const std::exception& e) {
+            ValidationResult result;
+            result.addError("", std::string("Invalid boolean: ") + e.what());
+            return result;
+        }
+        return ValidationResult();
     }
     static std::string toString(const bool& obj) {
         return obj ? "true" : "false";
@@ -124,10 +161,15 @@ struct YamlTraits<bool> {
 template <> 
 struct YamlTraits<std::map<std::string, std::string>> {
     using type = std::map<std::string, std::string>;
-    static void parse(std::map<std::string, std::string>& obj, const YAML::Node& node) {
-        if (node.IsMap()) {
+    static ValidationResult parse(std::map<std::string, std::string>& obj, const YAML::Node& node) {
+        try {
             obj = node.template as<std::map<std::string, std::string>>();
+        } catch (const std::exception& e) {
+            ValidationResult result;
+            result.addError("", std::string("Invalid map: ") + e.what());
+            return result;
         }
+        return ValidationResult();
     }
     static std::string toString(const std::map<std::string, std::string>& obj) {
         std::string result = "{";
@@ -145,10 +187,15 @@ struct YamlTraits<std::map<std::string, std::string>> {
 template <> 
 struct YamlTraits<std::vector<std::string>> {
     using type = std::vector<std::string>;
-    static void parse(std::vector<std::string>& obj, const YAML::Node& node) {
-        if (node.IsSequence()) {
+    static ValidationResult parse(std::vector<std::string>& obj, const YAML::Node& node) {
+        try {
             obj = node.template as<std::vector<std::string>>();
+        } catch (const std::exception& e) {
+            ValidationResult result;
+            result.addError("", std::string("Invalid vector: ") + e.what());
+            return result;
         }
+        return ValidationResult();
     }
     static std::string toString(const std::vector<std::string>& obj) {
         std::string result = "[";
@@ -168,8 +215,8 @@ struct YamlTraits<std::vector<std::string>> {
 // ============================================================================
 
 template <HasYamlTraits T> 
-void dispatchParse(T& obj, const YAML::Node& node) {
-    YamlTraits<T>::parse(obj, node);
+ValidationResult dispatchParse(T& obj, const YAML::Node& node) {
+    return YamlTraits<T>::parse(obj, node);
 }
 
 template <HasYamlTraits T> 
@@ -208,13 +255,8 @@ std::optional<T> fromYaml(const YAML::Node& yaml) {
                 if (!yaml[field.fieldName]) return;
 
                 const auto& fieldNode = yaml[field.fieldName];
-                try {
-                    dispatchParse(obj.*field.memberPtr, fieldNode);
-                } catch (const std::exception&) {
-                    // Silently skip
-                } catch (...) {
-                    // Catch anything
-                }
+                auto parseResult = dispatchParse(obj.*field.memberPtr, fieldNode);
+                // Silently skip on error for non-validating version
             }(fields));
         },
         T::fields);
@@ -238,12 +280,9 @@ std::pair<std::optional<T>, ValidationResult> fromYamlWithValidation(const YAML:
                 }
 
                 const auto& fieldNode = yaml[field.fieldName];
-                try {
-                    dispatchParse(obj.*field.memberPtr, fieldNode);
-                } catch (const std::exception& e) {
-                    result.addError(field.fieldName, std::string("Parse error: ") + e.what());
-                } catch (...) {
-                    result.addError(field.fieldName, "Unknown parse error");
+                auto parseResult = dispatchParse(obj.*field.memberPtr, fieldNode);
+                if (!parseResult.valid) {
+                    result.mergeErrors(field.fieldName, parseResult);
                 }
             }(fields));
         },
@@ -324,3 +363,4 @@ std::string toJson(const T& obj) {
 }
 
 }  // namespace meta
+

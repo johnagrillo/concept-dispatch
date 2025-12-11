@@ -12,14 +12,8 @@ template<int Min, int Max>
 struct BoundedInt {
     int val;
     
-    BoundedInt(int v = Min) : val(v) {
-        if (v < Min || v > Max) {
-            throw std::runtime_error(
-                "Value " + std::to_string(v) + " out of bounds [" + 
-                std::to_string(Min) + ", " + std::to_string(Max) + "]"
-            );
-        }
-    }
+    // Default constructor - no validation, just initializes to Min
+    BoundedInt(int v = Min) : val(v) {}
     
     static constexpr int min = Min;
     static constexpr int max = Max;
@@ -35,19 +29,11 @@ template<size_t MinLen, size_t MaxLen>
 struct BoundedString {
     std::string val;
     
-    // Default constructor - creates valid default string
-    BoundedString() : val(std::string(MinLen, ' ')) { }
+    // Default constructor - creates valid default string of MinLen spaces
+    BoundedString() : val(std::string(MinLen, ' ')) {}
     
-    // Parameterized constructor - validates input
-    BoundedString(const std::string& v) : val(v) {
-        if (v.length() < MinLen || v.length() > MaxLen) {
-            throw std::runtime_error(
-                "String length " + std::to_string(v.length()) + 
-                " out of bounds [" + std::to_string(MinLen) + ", " + 
-                std::to_string(MaxLen) + "]"
-            );
-        }
-    }
+    // Parameterized constructor - no validation, just assigns
+    BoundedString(const std::string& v) : val(v) {}
     
     static constexpr size_t minLen = MinLen;
     static constexpr size_t maxLen = MaxLen;
@@ -59,13 +45,32 @@ struct BoundedString {
 // REGISTER BOUNDED TYPES WITH FRAMEWORK
 // ============================================================================
 
-// Register BoundedInt as YamlSerializable
+// Register BoundedInt as YamlSerializable with validation in parse
 template<int Min, int Max>
 struct YamlTraits<BoundedInt<Min, Max>> {
     using type = BoundedInt<Min, Max>;
     
-    static void parse(BoundedInt<Min, Max>& obj, const YAML::Node& node) {
-        obj = BoundedInt<Min, Max>(node.template as<int>());
+    static ValidationResult parse(BoundedInt<Min, Max>& obj, const YAML::Node& node) {
+        int value;
+        try {
+            value = node.template as<int>();
+        } catch (const std::exception& e) {
+            ValidationResult result;
+            result.addError("", std::string("Invalid integer: ") + e.what());
+            return result;
+        }
+        
+        if (value < Min || value > Max) {
+            ValidationResult result;
+            result.addError("", 
+                "Value " + std::to_string(value) + " out of bounds [" + 
+                std::to_string(Min) + ", " + std::to_string(Max) + "]"
+            );
+            return result;
+        }
+        
+        obj.val = value;
+        return ValidationResult();
     }
     
     static std::string toString(const BoundedInt<Min, Max>& obj) {
@@ -73,13 +78,33 @@ struct YamlTraits<BoundedInt<Min, Max>> {
     }
 };
 
-// Register BoundedString as YamlSerializable
+// Register BoundedString as YamlSerializable with validation in parse
 template<size_t MinLen, size_t MaxLen>
 struct YamlTraits<BoundedString<MinLen, MaxLen>> {
     using type = BoundedString<MinLen, MaxLen>;
     
-    static void parse(BoundedString<MinLen, MaxLen>& obj, const YAML::Node& node) {
-        obj = BoundedString<MinLen, MaxLen>(node.template as<std::string>());
+    static ValidationResult parse(BoundedString<MinLen, MaxLen>& obj, const YAML::Node& node) {
+        std::string value;
+        try {
+            value = node.template as<std::string>();
+        } catch (const std::exception& e) {
+            ValidationResult result;
+            result.addError("", std::string("Invalid string: ") + e.what());
+            return result;
+        }
+        
+        if (value.length() < MinLen || value.length() > MaxLen) {
+            ValidationResult result;
+            result.addError("", 
+                "String length " + std::to_string(value.length()) + 
+                " out of bounds [" + std::to_string(MinLen) + ", " + 
+                std::to_string(MaxLen) + "]"
+            );
+            return result;
+        }
+        
+        obj.val = value;
+        return ValidationResult();
     }
     
     static std::string toString(const BoundedString<MinLen, MaxLen>& obj) {
