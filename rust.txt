@@ -1,0 +1,386 @@
+// File: yaml_derive/src/lib.rs
+// This is a separate proc-macro crate
+
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{parse_macro_input, DeriveInput, Data, Fields};
+
+/// Derives YamlSerializable trait for structs
+/// 
+/// Usage:
+///   #[derive(YamlSerializable)]
+///   struct MyStruct {
+///       #[field("Description")]
+///       field_name: String,
+///   }
+#[proc_macro_derive(YamlSerializable, attributes(field))]
+pub fn derive_yaml_serializable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    
+    let name = &input.ident;
+    
+    match &input.data {
+        Data::Struct(data) => {
+            match &data.fields {
+                Fields::Named(fields) => {
+                    // Generate from_yaml
+                    let field_names = fields.named.iter().map(|f| &f.ident);
+                    let field_names_str = fields.named.iter()
+                        .map(|f| f.ident.as_ref().unwrap().to_string());
+                    let field_types = fields.named.iter().map(|f| &f.ty);
+                    
+                    let from_yaml_fields = fields.named.iter().map(|f| {
+                        let name = &f.ident;
+                        let name_str = name.as_ref().unwrap().to_string();
+                        let ty = &f.ty;
+                        quote! {
+                            let #name = <#ty as YamlSerializable>::from_yaml(
+                                node.get(#name_str).ok_or("Missing field")?
+                            )?;
+                        }
+                    });
+                    
+                    let field_names2 = fields.named.iter().map(|f| &f.ident);
+                    
+                    // Generate to_string
+                    let to_string_fields = fields.named.iter().map(|f| {
+                        let name = &f.ident;
+                        let ty = &f.ty;
+                        quote! {
+                            format!("{}: {}\n", stringify!(#name), self.#name.to_string())
+                        }
+                    });
+                    
+                    // Generate to_json
+                    let to_json_fields = fields.named.iter().enumerate().map(|(i, f)| {
+                        let name = &f.ident;
+                        let name_str = name.as_ref().unwrap().to_string();
+                        let is_last = i == fields.named.len() - 1;
+                        let comma = if is_last { "" } else { "," };
+                        quote! {
+                            format!("  \"{}\": {}{}\n", #name_str, self.#name.to_json(), #comma)
+                        }
+                    });
+                    
+                    let expanded = quote! {
+                        impl YamlSerializable for #name {
+                            fn from_yaml(node: &serde_yaml::Value) -> Result<Self, String> {
+                                #(#from_yaml_fields)*
+                                Ok(Self {
+                                    #(#field_names2),*
+                                })
+                            }
+                            
+                            fn to_string(&self) -> String {
+                                let mut result = String::new();
+                                #(result.push_str(&#to_string_fields);)*
+                                result
+                            }
+                            
+                            fn to_json(&self) -> String {
+                                let mut result = String::from("{\n");
+                                #(result.push_str(&#to_json_fields);)*
+                                result.push_str("}\n");
+                                result
+                            }
+                        }
+                    };
+                    
+                    TokenStream::from(expanded)
+                }
+                _ => syn::Error::new_spanned(
+                    &input,
+                    "YamlSerializable only supports named fields"
+                )
+                .to_compile_error()
+                .into(),
+            }
+        }
+        _ => syn::Error::new_spanned(&input, "YamlSerializable only supports structs")
+            .to_compile_error()
+            .into(),
+    }
+}
+
+
+
+
+
+
+
+
+use serde_yaml::Value;
+use std::collections::HashMap;
+
+// ============================================================================
+// TRAIT DEFINITION (library)
+// ============================================================================
+
+pub trait YamlSerializable: Sized {
+    fn from_yaml(node: &Value) -> Result<Self, String>;
+    fn to_string(&self) -> String;
+    fn to_json(&self) -> String;
+}
+
+// ============================================================================
+// BASE TYPE IMPLEMENTATIONS (library)
+// ============================================================================
+
+impl YamlSerializable for String {
+    fn from_yaml(node: &Value) -> Result<Self, String> {
+        node.as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Expected string".to_string())
+    }
+    fn to_string(&self) -> String {
+        self.clone()
+    }
+    fn to_json(&self) -> String {
+        format!("\"{}\"", self)
+    }
+}
+
+impl YamlSerializable for i32 {
+    fn from_yaml(node: &Value) -> Result<Self, String> {
+        node.as_i64()
+            .map(|n| n as i32)
+            .ok_or_else(|| "Expected integer".to_string())
+    }
+    fn to_string(&self) -> String {
+        self.to_string()
+    }
+    fn to_json(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl YamlSerializable for f64 {
+    fn from_yaml(node: &Value) -> Result<Self, String> {
+        node.as_f64().ok_or_else(|| "Expected float".to_string())
+    }
+    fn to_string(&self) -> String {
+        self.to_string()
+    }
+    fn to_json(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl YamlSerializable for bool {
+    fn from_yaml(node: &Value) -> Result<Self, String> {
+        node.as_bool().ok_or_else(|| "Expected bool".to_string())
+    }
+    fn to_string(&self) -> String {
+        if *self { "true" } else { "false" }.to_string()
+    }
+    fn to_json(&self) -> String {
+        if *self { "true" } else { "false" }.to_string()
+    }
+}
+
+impl YamlSerializable for HashMap<String, String> {
+    fn from_yaml(node: &Value) -> Result<Self, String> {
+        let mut map = HashMap::new();
+        if let Some(obj) = node.as_mapping() {
+            for (k, v) in obj {
+                let key = k.as_str().ok_or("Expected string key")?.to_string();
+                let value = v.as_str().ok_or("Expected string value")?.to_string();
+                map.insert(key, value);
+            }
+        }
+        Ok(map)
+    }
+    fn to_string(&self) -> String {
+        self.iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+    fn to_json(&self) -> String {
+        let items = self.iter()
+            .map(|(k, v)| format!("\"{}\": \"{}\"", k, v))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{{{}}}", items)
+    }
+}
+
+impl YamlSerializable for Vec<String> {
+    fn from_yaml(node: &Value) -> Result<Self, String> {
+        node.as_sequence()
+            .ok_or("Expected array")?
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(|s| s.to_string())
+                    .ok_or("Expected string in array".to_string())
+            })
+            .collect()
+    }
+    fn to_string(&self) -> String {
+        self.join(",")
+    }
+    fn to_json(&self) -> String {
+        let items = self.iter()
+            .map(|s| format!("\"{}\"", s))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("[{}]", items)
+    }
+}
+
+// ============================================================================
+// PROC MACRO (pseudo-code - what #[derive(YamlSerializable)] generates)
+// ============================================================================
+// 
+// In real code, this would be in a proc-macro crate:
+//
+// #[proc_macro_derive(YamlSerializable, attributes(field))]
+// pub fn derive_yaml_serializable(input: TokenStream) -> TokenStream {
+//     let DeriveInput { ident, data, .. } = parse_macro_input!(input);
+//     
+//     if let Data::Struct(DataStruct { fields: Fields::Named(fields), .. }) = data {
+//         let field_getters = fields.named.iter().map(|f| {
+//             let name = &f.ident;
+//             let ty = &f.ty;
+//             quote! {
+//                 let #name = if let Some(n) = node.get(stringify!(#name)) {
+//                     <#ty as YamlSerializable>::from_yaml(n)?
+//                 } else {
+//                     return Err("Missing required field".to_string());
+//                 };
+//             }
+//         });
+//
+//         // ... generates from_yaml, to_string, to_json
+//     }
+// }
+
+// ============================================================================
+// USER CODE (what you write)
+// ============================================================================
+
+#[derive(YamlSerializable)]
+#[struct_name("Person")]
+struct Person {
+    #[field("Person's name")]
+    name: String,
+    #[field("Person's age")]
+    age: i32,
+    #[field("Is person active")]
+    active: bool,
+}
+
+#[derive(YamlSerializable)]
+#[struct_name("Config")]
+struct Config {
+    #[field("Config title")]
+    title: String,
+    #[field("Settings")]
+    settings: HashMap<String, String>,
+    #[field("Tags")]
+    tags: Vec<String>,
+    #[field("Timeout")]
+    timeout: f64,
+}
+
+#[derive(YamlSerializable)]
+#[struct_name("User")]
+struct User {
+    #[field("Username")]
+    username: String,
+    #[field("Email")]
+    email: String,
+    #[field("User score")]
+    score: i32,
+}
+
+// ============================================================================
+// WHAT MACRO GENERATES (for Person - shown for illustration)
+// ============================================================================
+
+impl YamlSerializable for Person {
+    fn from_yaml(node: &Value) -> Result<Self, String> {
+        let name = String::from_yaml(node.get("name").ok_or("Missing name")?)?;
+        let age = i32::from_yaml(node.get("age").ok_or("Missing age")?)?;
+        let active = bool::from_yaml(node.get("active").ok_or("Missing active")?)?;
+        Ok(Person { name, age, active })
+    }
+
+    fn to_string(&self) -> String {
+        format!(
+            "name: {}  # Person's name\nage: {}  # Person's age\nactive: {}  # Is person active\n",
+            self.name, self.age, self.active
+        )
+    }
+
+    fn to_json(&self) -> String {
+        format!(
+            "{{\n  \"name\": \"{}\",\n  \"age\": {},\n  \"active\": {}\n}}\n",
+            self.name, self.age, self.active
+        )
+    }
+}
+
+// ============================================================================
+// USAGE
+// ============================================================================
+
+fn main() {
+    let yaml_str = r#"
+name: Alice
+age: 30
+active: true
+"#;
+
+    let yaml = serde_yaml::from_str::<Value>(yaml_str).unwrap();
+    
+    match Person::from_yaml(&yaml) {
+        Ok(person) => {
+            println!("=== toString ===");
+            println!("{}", person.to_string());
+            println!("=== toJson ===");
+            println!("{}", person.to_json());
+        }
+        Err(e) => println!("Error: {}", e),
+    }
+
+    // Config
+    let config_str = r#"
+title: MyApp
+settings:
+  color: blue
+  mode: debug
+tags:
+  - important
+  - production
+timeout: 30.5
+"#;
+
+    let config_yaml = serde_yaml::from_str::<Value>(config_str).unwrap();
+    if let Ok(config) = Config::from_yaml(&config_yaml) {
+        println!("\n=== Config ===");
+        println!("{}", config.to_string());
+        println!("{}", config.to_json());
+    }
+
+    // User
+    let user_str = r#"
+username: john_doe
+email: john@example.com
+score: 100
+"#;
+
+    let user_yaml = serde_yaml::from_str::<Value>(user_str).unwrap();
+    if let Ok(user) = User::from_yaml(&user_yaml) {
+        println!("\n=== User ===");
+        println!("{}", user.to_string());
+        println!("{}", user.to_json());
+    }
+}
+
+
+
+
+
+
